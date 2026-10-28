@@ -1,0 +1,35 @@
+# Laufzeit-Zustand des Proxys (Config + Presets) — gehoert nicht ins Repo
+proxy_state.json
+ollama_proxy_state.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+ollama-proxy-venv/
+
+# Lokale Deploy-Ziele und Stack-Konfiguration (Vorlagen: deploy/*.example)
+deploy/targets.local.env
+stack.env
+ollama.env
+proxy.env
+deploy.env
+# Laufzeitdaten, falls der Stack testweise direkt im Repo gestartet wird
+data/
+ollama/
+
+# Logs
+*.log
+*.err
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Private Notizen
+*.local.md
+
+
+# Interne Arbeitslisten
+VERBESSERUNGEN*.md

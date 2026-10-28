@@ -1,0 +1,26 @@
+# systemd-User-Unit fuer den Proxy (Linux ohne Docker).
+# Wird von scripts/update.sh nach ~/.config/systemd/user/ kopiert — Aenderungen
+# hier im Repo machen. Laeuft auch ohne Login, wenn einmalig
+#   sudo loginctl enable-linger $USER
+# ausgefuehrt wurde. Logs: journalctl --user -u ollama-proxy -f
+#
+# Eigene Abweichungen (z.B. anderer KV-Cache-Typ) in ~/ollama-proxy/proxy.env.
+
+[Unit]
+Description=Ollama Normalizing Proxy
+
+[Service]
+Environment=OLLAMA_UPSTREAM=http://127.0.0.1:11434
+Environment=PROXY_HOST=0.0.0.0
+Environment=PROXY_PORT=11435
+Environment=PROXY_STATE=%h/ollama-proxy/data/state.json
+# muss zum Ollama-Dienst passen (deploy/linux/ollama-override.conf)
+Environment=OLLAMA_KV_CACHE_TYPE=q8_0
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/ollama-proxy/proxy.env
+ExecStart=%h/ollama-proxy/venv/bin/python %h/ollama-proxy/app/ollama_proxy.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

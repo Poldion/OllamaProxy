@@ -1,0 +1,4 @@
+# Ins Image kommen nur requirements.txt und ollama_proxy.py
+*
+!requirements.txt
+!ollama_proxy.py

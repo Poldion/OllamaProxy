@@ -1,0 +1,78 @@
+# Ollama + OllamaProxy fuer Linux mit AMD-GPU (getestet auf Ryzen AI Max "Strix Halo").
+#
+# Layout auf dem Host (wie beim Mac mini alles unter einem Ordner):
+#   ~/ollama-proxy/app        dieses Repo (hier liegt diese Datei)
+#   ~/ollama-proxy/stack.env  Variablen fuer diese Datei   (Vorlage: deploy/stack.env.example)
+#   ~/ollama-proxy/ollama.env Extra-Env fuer Ollama, opt.  (Vorlage: deploy/ollama.env.example)
+#   ~/ollama-proxy/data       state.json des Proxys
+#   ~/ollama-proxy/ollama     Ollama-Daten inkl. Modelle (/root/.ollama im Container)
+#
+# Starten (aus ~/ollama-proxy/app):
+#   docker compose --env-file ../stack.env up -d --build
+# Updates des Proxys macht scripts/update.sh (baut nur den Proxy neu).
+#
+# Braucht Docker Compose >= 2.24 (env_file mit "required: false").
+
+name: ollama-stack
+
+services:
+  ollama:
+    # "rocm" = ROCm/HIP-Backend, "latest" = Vulkan-Backend (im Standard-Image
+    # enthalten und automatisch aktiv). Fuer reproduzierbare Updates eine feste
+    # Version eintragen, z.B. "0.40.3-rocm" bzw. "0.40.3".
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-rocm}
+    container_name: ollama
+    restart: unless-stopped
+    devices:
+      - /dev/kfd          # ROCm-Compute (fuer Vulkan nicht noetig, schadet nicht)
+      - /dev/dri          # GPU-Render-Nodes
+    environment:
+      OLLAMA_HOST: "0.0.0.0:11434"
+      OLLAMA_KEEP_ALIVE: "-1"
+      # Der KV-Cache-Typ wird NUR hier wirksam (nicht pro Request). Der Proxy bekommt
+      # denselben Wert, damit Anzeige und Prognose stimmen.
+      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
+      OLLAMA_FLASH_ATTENTION: "1"          # Voraussetzung fuer quantisierten KV-Cache
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-3}
+    env_file:
+      # z.B. HSA_OVERRIDE_GFX_VERSION, OLLAMA_VULKAN=0, Geraeteauswahl
+      - path: ${OLLAMA_ENV_FILE:-../ollama.env}
+        required: false
+    volumes:
+      - ${OLLAMA_DATA_DIR:-../ollama}:/root/.ollama
+    ports:
+      # Direktzugriff auf Ollama (Embeddings, Clients ohne Proxy). Nur im LAN
+      # gewuenscht? Dann OLLAMA_BIND=127.0.0.1 setzen.
+      - "${OLLAMA_BIND:-0.0.0.0}:${OLLAMA_PORT:-11434}:11434"
+
+  proxy:
+    build: .
+    image: ollama-proxy:local
+    container_name: ollama-proxy
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    # Gleicher PID-Namespace wie Ollama: nur so sieht der Proxy die Runner-Prozesse
+    # (llama-server) fuer die Speichermessung. Wird der Ollama-Container neu
+    # erstellt, den Proxy mit neu starten (docker compose up -d erledigt das).
+    pid: "service:ollama"
+    # Mit der UID des Host-Users laufen, damit data/state.json dir gehoert
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      OLLAMA_UPSTREAM: http://ollama:11434
+      PROXY_STATE: /data/state.json
+      # Obergrenze Antwortlaenge (num_predict), 0 = aus (feste Grenzen schneiden Denkmodelle mitten im
+      # Denken ab). Je Client-IP eigene Grenze, z.B. kurze Sprachantworten fuer Home Assistant:
+      # PROXY_MAX_PREDICT_CLIENTS=192.168.1.10=1024 (siehe deploy/stack.env.example)
+      PROXY_MAX_PREDICT: ${PROXY_MAX_PREDICT:-0}
+      PROXY_MAX_PREDICT_CLIENTS: ${PROXY_MAX_PREDICT_CLIENTS:-}
+      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
+      # Module (ImageGen, FaceRec ...): /data/modules.json, Vorlage deploy/modules.json.example
+      PROXY_MODULES_FILE: /data/modules.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${PROXY_DATA_DIR:-../data}:/data
+    ports:
+      - "${PROXY_PORT:-11435}:11435"

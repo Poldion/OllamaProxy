@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>__LABEL__</string>
+
+    <!-- Vorlage: scripts/update.sh setzt __LABEL__ (LAUNCHD_LABEL, Standard local.ollamaproxy)
+         und __HOME__ ein und legt das Ergebnis nach ~/Library/LaunchAgents/.
+         Alles liegt unter ~/ollama-proxy/: app/ (Git-Klon), venv/, data/. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/ollama-proxy/venv/bin/python</string>
+        <string>__HOME__/ollama-proxy/app/ollama_proxy.py</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>OLLAMA_UPSTREAM</key>
+        <string>http://localhost:11434</string>
+        <key>PROXY_HOST</key>
+        <string>0.0.0.0</string>
+        <key>PROXY_PORT</key>
+        <string>11435</string>
+        <!-- State-Datei mit absolutem Pfad, sonst landet sie irgendwo -->
+        <key>PROXY_STATE</key>
+        <string>__HOME__/ollama-proxy/data/state.json</string>
+    </dict>
+
+    <!-- Beim Boot starten und bei Absturz neu starten -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Logs zum Debuggen -->
+    <key>StandardOutPath</key>
+    <string>__HOME__/ollama-proxy/data/proxy.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/ollama-proxy/data/proxy.err</string>
+</dict>
+</plist>

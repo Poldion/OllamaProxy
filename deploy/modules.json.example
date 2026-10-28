@@ -1,0 +1,6 @@
+{
+  "modules": [
+    {"name": "ImageGen", "url": "http://host.docker.internal:8190", "idle_free_minutes": 2},
+    {"name": "FaceRec", "url": "http://host.docker.internal:8191"}
+  ]
+}
