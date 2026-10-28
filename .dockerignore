@@ -1,4 +1,7 @@
-# Ins Image kommen nur requirements.txt und ollama_proxy.py
+# Ins Image kommen nur requirements.txt, der Proxy und seine Uebersetzungen
 *
 !requirements.txt
 !ollama_proxy.py
+!i18n.py
+!locales/
+!static/

@@ -1,5 +1,7 @@
 # Betrieb unter Linux mit AMD-GPU (z. B. Ryzen AI Max „Strix Halo“)
 
+🇬🇧 [English](linux-amd.en.md) · 🇩🇪 Deutsch
+
 Ollama und Proxy auf einem headless Linux-Rechner mit AMD-GPU. Getestet auf Ryzen AI Max+ 395 (iGPU Radeon 8060S,
 `gfx1151`, 128 GB Unified Memory) mit Ubuntu und `ollama/ollama:0.40.x-rocm`. Zwei Betriebsarten mit gleicher
 Ordnerstruktur und gleichem Update-Skript:

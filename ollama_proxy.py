@@ -45,10 +45,13 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-__version__ = "0.1.0"          # SemVer; einzige Stelle (Oberflaeche und /admin/state lesen sie von hier)
+import i18n
+from i18n import N_
+
+__version__ = "0.2.0"          # SemVer; einzige Stelle (Oberflaeche und /admin/state lesen sie von hier)
 
 UPSTREAM = os.environ.get("OLLAMA_UPSTREAM", "http://localhost:11434").rstrip("/")
 LISTEN_HOST = os.environ.get("PROXY_HOST", "0.0.0.0")
@@ -178,17 +181,17 @@ def migrate_state(data: dict) -> dict:
 def validate_config(models: list, default_model: str) -> str | None:
     """Fehlertext oder None. Namen und Aliase muessen eindeutig zuordenbar sein."""
     if not models:
-        return "mindestens ein Modell freigeben"
+        return N_("mindestens ein Modell freigeben")
     names = set()
     for e in models:
         if not e["model"]:
-            return "Eintrag ohne Modellname"
+            return N_("Eintrag ohne Modellname")
         for n in filter(None, (e["model"], e["alias"], *[q["alias"] for q in e.get("profiles", [])])):
             if n in names:
-                return f"Name/Alias '{n}' ist doppelt vergeben"
+                return N_("Name/Alias '{x}' ist doppelt vergeben").replace("{x}", n)
             names.add(n)
     if default_model not in [e["model"] for e in models]:
-        return "Standardmodell muss freigegeben sein"
+        return N_("Standardmodell muss freigegeben sein")
     return None
 
 
@@ -688,6 +691,16 @@ app.add_middleware(
 )
 
 
+def ui_lang(request: Request) -> str:
+    """Sprache der Oberflaeche (Kopfzeile von /i18n.js, sonst Accept-Language; Standard Deutsch)."""
+    return i18n.request_lang(request.headers, "x-ollamaproxy-lang")
+
+
+def fail(status: int, message: str, request: Request) -> JSONResponse:
+    """Fehler der Verwaltungs-Endpunkte; Meldung in der Sprache der Anfrage."""
+    return JSONResponse({"error": i18n.translate(message, ui_lang(request))}, status_code=status)
+
+
 # ---- Native Ollama-Endpunkte ----
 
 _vision_cache: dict[tuple[str, str], str] = {}   # (helper_model, sha256(media)) -> Beschreibung
@@ -1130,7 +1143,7 @@ async def apply_config(request: Request):
     default_model = (data.get("default_model") or "").strip()
     err = validate_config(models, default_model)
     if err:
-        return JSONResponse({"error": err}, status_code=400)
+        return fail(400, err, request)
     old = {e["model"]: e for e in STATE["models"]}
     try:
         loaded = await loaded_contexts()
@@ -1160,12 +1173,12 @@ async def save_preset(request: Request):
     data = await request.json()
     name = (data.get("name") or "").strip()
     if not name:
-        return JSONResponse({"error": "kein Preset-Name"}, status_code=400)
+        return fail(400, "kein Preset-Name", request)
     models = [normalize_entry(e) for e in data.get("models") or STATE["models"]]
     default_model = data.get("default_model") or STATE["default_model"]
     err = validate_config(models, default_model)
     if err:
-        return JSONResponse({"error": err}, status_code=400)
+        return fail(400, err, request)
     STATE["presets"][name] = _config_view(models, default_model)
     save_state(STATE)
     return {"ok": True, "presets": list(STATE["presets"].keys())}
@@ -1186,7 +1199,7 @@ async def admin_pull(request: Request):
     data = await request.json()
     name = (data.get("name") or "").strip()
     if not name:
-        return JSONResponse({"error": "kein Modellname"}, status_code=400)
+        return fail(400, "kein Modellname", request)
 
     async def gen():
         req = client.build_request("POST", "/api/pull",
@@ -1205,12 +1218,10 @@ async def admin_delete(request: Request):
     data = await request.json()
     name = (data.get("name") or "").strip()
     if not name:
-        return JSONResponse({"error": "kein Modellname"}, status_code=400)
+        return fail(400, "kein Modellname", request)
     # freigegebene Modelle nicht loeschen lassen
     if any(e["model"] == name for e in entries()):
-        return JSONResponse(
-            {"error": "freigegebenes Modell kann nicht geloescht werden"},
-            status_code=409)
+        return fail(409, "freigegebenes Modell kann nicht gelöscht werden", request)
     req = client.build_request("DELETE", "/api/delete", json={"model": name})
     r = await client.send(req)
     return JSONResponse({"ok": r.status_code == 200,
@@ -1601,7 +1612,7 @@ async def loaded_models(mem: dict | None = None, mods: list | None = None) -> li
 # GPU-Anteil der Sprachmodelle ab. Der Waechter gibt Module mit "free" nach idle_free_minutes Leerlauf frei.
 MODULES_FILE = Path(os.environ.get("PROXY_MODULES_FILE") or (STATE_FILE.parent / "modules.json"))
 MODULE_INFO_TTL = 60                # Sekunden, so lange gilt die Selbstauskunft eines Moduls
-_module_info: dict[str, tuple[float, dict]] = {}
+_module_info: dict[tuple[str, str], tuple[float, dict]] = {}   # (url, Sprache) -> (Zeit, Selbstauskunft)
 _module_idle_since: dict[str, float] = {}
 
 
@@ -1642,20 +1653,21 @@ def _module_headers(m: dict) -> dict:
     return {"Authorization": f"Bearer {m['token']}"} if m.get("token") else {}
 
 
-async def module_status(m: dict) -> dict:
-    """Selbstauskunft + Speicher eines Moduls; nicht erreichbar -> reachable False."""
+async def module_status(m: dict, lang: str = "de") -> dict:
+    """Selbstauskunft + Speicher eines Moduls; nicht erreichbar -> reachable False.
+    Die Sprache der Texte (Link-Beschriftung, detail) bestimmt das Modul anhand von Accept-Language."""
     out = {"name": m.get("name") or m["url"], "url": m["url"], "public_url": m.get("public_url"),
            "port": urlsplit(m["url"]).port, "reachable": False, "links": [], "capabilities": [],
            "held": 0, "gpu": 0, "rss": None, "reclaimable": False, "busy": False, "detail": None}
     now = time.time()
     try:
-        async with httpx.AsyncClient(timeout=3, headers=_module_headers(m)) as c:
-            cached = _module_info.get(m["url"])
+        async with httpx.AsyncClient(timeout=3, headers={**_module_headers(m), "Accept-Language": lang}) as c:
+            cached = _module_info.get((m["url"], lang))
             if cached and now - cached[0] < MODULE_INFO_TTL:
                 info = cached[1]
             else:
                 info = (await c.get(f"{m['url']}/proxy-module")).raise_for_status().json()
-                _module_info[m["url"]] = (now, info)
+                _module_info[(m["url"], lang)] = (now, info)
             out.update(reachable=True, version=info.get("version"), links=info.get("links") or [],
                        capabilities=info.get("capabilities") or [])
             if not m.get("name") and info.get("name"):
@@ -1669,20 +1681,20 @@ async def module_status(m: dict) -> dict:
                 out["gpu"] = out["gpu"] or 0
                 out["held"] = out["held"] or 0
     except (httpx.HTTPError, ValueError) as e:
-        _module_info.pop(m["url"], None)
+        _module_info.pop((m["url"], lang), None)
         out["error"] = type(e).__name__
     return out
 
 
-async def modules_status() -> list[dict]:
-    return list(await asyncio.gather(*(module_status(m) for m in MODULES))) if MODULES else []
+async def modules_status(lang: str = "de") -> list[dict]:
+    return list(await asyncio.gather(*(module_status(m, lang) for m in MODULES))) if MODULES else []
 
 
 def find_module(name: str) -> dict | None:
     """Modul nach Namen aus modules.json, sonst nach dem Namen aus seiner Selbstauskunft oder der Adresse."""
     for m in MODULES:
-        info = _module_info.get(m["url"], (0, {}))[1]
-        if name in (m.get("name"), info.get("name"), m["url"]):
+        names = {i.get("name") for (url, _), (_, i) in list(_module_info.items()) if url == m["url"]}
+        if name in {m.get("name"), m["url"], *names}:
             return m
     return None
 
@@ -1716,8 +1728,8 @@ async def modules_idle_check():
 
 
 @app.get("/admin/modules")
-async def admin_modules():
-    return await modules_status()
+async def admin_modules(request: Request):
+    return await modules_status(ui_lang(request))
 
 
 @app.post("/admin/modules/free")
@@ -1726,19 +1738,19 @@ async def admin_module_free(request: Request):
     name = (await request.json()).get("name", "")
     m = find_module(name)
     if not m:
-        return JSONResponse({"error": "Modul unbekannt"}, status_code=404)
+        return fail(404, "Modul unbekannt", request)
     try:
         code = await module_free(m)
         return JSONResponse({"ok": code == 200}, status_code=code)
     except httpx.HTTPError as e:
-        return JSONResponse({"error": f"Modul nicht erreichbar: {type(e).__name__}"}, status_code=502)
+        return fail(502, f"Modul nicht erreichbar: {type(e).__name__}", request)
 
 
 @app.get("/admin/memory")
-async def admin_memory():
+async def admin_memory(request: Request):
     """RAM-Zustand + geladene Modelle fuer die UI."""
     mem = await system_memory()
-    mods = await modules_status()
+    mods = await modules_status(ui_lang(request))
     try:
         loaded = await loaded_models(mem, mods)
     except Exception:
@@ -1762,7 +1774,7 @@ async def admin_estimate(request: Request):
     try:
         meta = await model_meta(name)
     except KeyError:
-        return JSONResponse({"error": "Modell nicht installiert"}, status_code=404)
+        return fail(404, "Modell nicht installiert", request)
     est = estimate_from_meta(meta, num_ctx)
     mem = await system_memory()
     loaded = await loaded_models(mem, await modules_status())
@@ -1801,7 +1813,7 @@ async def admin_load(request: Request):
     data = await request.json()
     name = (data.get("model") or "").strip()
     if not name:
-        return JSONResponse({"error": "kein Modellname"}, status_code=400)
+        return fail(400, "kein Modellname", request)
     num_ctx = int(data.get("num_ctx") or default_entry()["forced_options"].get("num_ctx", 8192))
     keep_alive = data.get("keep_alive", -1)
     e = find_entry(name)
@@ -1834,7 +1846,7 @@ async def admin_unload(request: Request):
     if e:
         name = e["model"]                      # Alias -> echter Name
     if not name:
-        return JSONResponse({"error": "kein Modellname"}, status_code=400)
+        return fail(400, "kein Modellname", request)
     _manual_unloaded.add(name)                 # Waechter laedt es nicht zurueck
     r = await client.post("/api/generate", json={"model": name, "keep_alive": 0})
     return JSONResponse({"ok": r.status_code == 200}, status_code=r.status_code)
@@ -1849,12 +1861,18 @@ async def ui():
     return HTML_UI
 
 
+@app.get("/i18n.js")
+async def i18n_js():
+    return Response(i18n.script("ollamaproxy.lang", "X-OllamaProxy-Lang"), media_type="text/javascript; charset=utf-8")
+
+
 HTML_UI = """<!DOCTYPE html>
 <html lang="de">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OllamaProxy</title>
+<script src="/i18n.js"></script>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -1978,12 +1996,15 @@ HTML_UI = """<!DOCTYPE html>
   .chatrow textarea { flex:1; min-height:44px; }
   .chatbtns { display:flex; flex-direction:column; gap:6px; }
   .chatbtns button { margin-top:0; width:auto; padding:8px 14px; }
+  .top { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+  .lang-switch { background:none; border:1px solid #2a313b; color:#8b94a3; border-radius:6px; padding:3px 8px;
+                 font-size:11px; font-weight:400; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>OLLAMAPROXY</h1>
-  <div class="sub" id="upstream">verbinde…</div>
+  <div class="top"><div><h1>OLLAMAPROXY</h1>
+  <div class="sub" id="upstream">verbinde…</div></div><span id="lang"></span></div>
 
   <div class="card">
     <label>Arbeitsspeicher</label>
@@ -1998,28 +2019,28 @@ HTML_UI = """<!DOCTYPE html>
 
     <label style="margin-top:18px">Geladene Modelle</label>
     <div class="modellist" id="loadedlist"></div>
-    <div class="note">"belegt" = Prozess-RAM + GPU-Anteil (GTT/VRAM), mindestens aber die
+    <div class="note">„belegt“ = Prozess-RAM + GPU-Anteil (GTT/VRAM), mindestens aber die
       Prognose: Seit Ollama 0.40 liegen die GPU-Gewichte im Grafiktreiber (GTT, geteilt mit
       System-RAM) und tauchen nicht im Prozess-RSS auf. Ollama selbst meldet oft zu wenig.</div>
   </div>
 
   <div class="card">
     <label>Freigegebene Modelle</label>
-    <div class="note" style="margin-top:0">Clients sehen nur diese Modelle. Jedes laeuft
+    <div class="note" style="margin-top:0">Clients sehen nur diese Modelle. Jedes läuft
       immer mit seinen Settings – egal, was der Client mitschickt –, damit Ollama es nie
       neu laden muss. Anfragen mit unbekanntem Modellnamen landen beim Standardmodell (★).</div>
     <div id="entries"></div>
     <button class="ghost" style="margin-top:10px" onclick="addEntry()">+ Modell freigeben</button>
 
-    <label style="margin-top:14px">Bild-/Audio-Helfer (fuer Modelle ohne Vision/Audio)</label>
+    <label style="margin-top:14px">Bild-/Audio-Helfer (für Modelle ohne Vision/Audio)</label>
     <select id="visionHelper"></select>
     <div class="note" style="margin-top:4px">Wird NUR genutzt, wenn das angefragte Modell das
       Medium (Bild bzw. Audio) nicht selbst verarbeiten kann. Beispiel: qwen3-coder-next bekommt
       Bilder + Audio von gemma4:e4b beschrieben/transkribiert; Agen/gemma-4-26B sieht Bilder selbst
-      und nutzt den Helfer nur fuer Audio; gemma4:e4b verarbeitet beides direkt.</div>
+      und nutzt den Helfer nur für Audio; gemma4:e4b verarbeitet beides direkt.</div>
 
     <div class="note" id="kvnote">KV-Cache-Typ: wird am Ollama-Server gesetzt
-      (OLLAMA_KV_CACHE_TYPE) und gilt fuer alle Modelle.</div>
+      (OLLAMA_KV_CACHE_TYPE) und gilt für alle Modelle.</div>
     <div class="note">Sampling (temperature, top_p, stop …) bestimmt weiterhin jeder
       Client selbst. think-Default greift nur, wenn der Client kein think mitschickt.
       Alias = Name, unter dem das Modell in Open WebUI / Home Assistant erscheint.</div>
@@ -2048,15 +2069,15 @@ HTML_UI = """<!DOCTYPE html>
         <button class="ghost" onclick="chatReset()">Neu</button>
       </div>
     </div>
-    <div class="note">Laeuft ueber den Proxy (/api/chat) – mit genau den erzwungenen
-      Settings wie bei echten Clients. Waehrend der Ausgabe: grobe Live-Rate; am Ende
+    <div class="note">Läuft über den Proxy (/api/chat) – mit genau den erzwungenen
+      Settings wie bei echten Clients. Während der Ausgabe: grobe Live-Rate; am Ende
       die exakten Werte von Ollama.</div>
   </div>
 
   <div class="card">
     <label>Modell installieren</label>
     <div class="saverow">
-      <input id="pullName" placeholder="z.B. llama3.1:8b oder hf.co/…">
+      <input id="pullName" placeholder="z. B. llama3.1:8b oder hf.co/…">
       <button class="ghost" onclick="pullModel()">Pull</button>
     </div>
     <div class="pullbar" id="pullbar"><div class="pullfill" id="pullfill"></div></div>
@@ -2085,6 +2106,8 @@ let PROMOTED = {};     // Modellname -> Eintrag, wie er am Server gilt
 let SIZES = {};
 let FORCED_CTX = 8192;
 let MEM = null;        // letzte /admin/memory-Antwort
+i18nApply();
+document.getElementById("lang").replaceWith(langSwitch());
 
 async function load() {
   const s = await (await fetch("/admin/state")).json();
@@ -2094,12 +2117,11 @@ async function load() {
   VISION_HELPER = s.vision_helper || "";
   PROMOTED = Object.fromEntries(s.models.map(e => [e.model, e]));
   document.getElementById("upstream").textContent =
-    s.available_models.length + " Modelle am Upstream verfuegbar · " +
-    s.models.length + " freigegeben" + (s.version ? " · v" + s.version : "");
+    tr("{n} Modelle am Upstream verfügbar · {m} freigegeben", {n: s.available_models.length, m: s.models.length}) +
+    (s.version ? " · v" + s.version : "");
   SIZES = s.model_sizes || {};
   if (s.kv_cache_type) document.getElementById("kvnote").textContent =
-    "KV-Cache-Typ: " + s.kv_cache_type + " – wird am Ollama-Server gesetzt " +
-    "(OLLAMA_KV_CACHE_TYPE) und gilt fuer alle Modelle.";
+    tr("KV-Cache-Typ: {type} – wird am Ollama-Server gesetzt (OLLAMA_KV_CACHE_TYPE) und gilt für alle Modelle.", {type: s.kv_cache_type});
   const d = PROMOTED[DEFAULT];
   FORCED_CTX = (d && d.forced_options.num_ctx) || 8192;
   renderEntries();
@@ -2129,25 +2151,25 @@ function renderEntries() {
     const opts = AVAILABLE.includes(e.model) ? AVAILABLE : [e.model].concat(AVAILABLE);
     div.innerHTML =
       `<div class="entry-head">
-         <button class="star" title="Standardmodell">★</button>
-         <select class="e-model">${opts.map(m => `<option value="${esc(m)}"${m === e.model ? " selected" : ""}>${esc(m)}${AVAILABLE.includes(m) ? "" : " (nicht installiert)"}</option>`).join("")}</select>
-         <button class="del" title="Freigabe entfernen">✕</button>
+         <button class="star" title="${tr('Standardmodell')}">★</button>
+         <select class="e-model">${opts.map(m => `<option value="${esc(m)}"${m === e.model ? " selected" : ""}>${esc(m)}${AVAILABLE.includes(m) ? "" : tr(" (nicht installiert)")}</option>`).join("")}</select>
+         <button class="del" title="${tr('Freigabe entfernen')}">✕</button>
        </div>
        <div class="row3">
-         <div><label>Alias (optional)</label><input class="e-alias" placeholder="echter Name"></div>
+         <div><label>${tr('Alias (optional)')}</label><input class="e-alias" placeholder="${tr('echter Name')}"></div>
          <div><label>num_ctx</label><input class="e-ctx" type="number" step="512"></div>
-         <div><label>keep_alive</label><input class="e-ka" placeholder="-1 = dauerhaft"></div>
+         <div><label>keep_alive</label><input class="e-ka" placeholder="${tr('-1 = dauerhaft')}"></div>
        </div>
        <div class="row">
-         <div><label>think (Default)</label>
+         <div><label>${tr('think (Standard)')}</label>
            <select class="e-think">
-             <option value="null">Client entscheidet</option>
-             <option value="true">an</option><option value="false">aus</option>
+             <option value="null">${tr('Client entscheidet')}</option>
+             <option value="true">${tr('an')}</option><option value="false">${tr('aus')}</option>
            </select></div>
-         <div><label class="check"><input type="checkbox" class="e-warm"> beim Anwenden vorladen</label></div>
+         <div><label class="check"><input type="checkbox" class="e-warm"> ${tr('beim Anwenden vorladen')}</label></div>
        </div>
-       <div><label>Profile (optional, eins pro Zeile: weiterer Name mit eigenen Sampling-Werten, gleicher Runner)</label>
-         <textarea class="e-prof" rows="2" placeholder="Qwen3.6-Code: temperature=0.6 top_p=0.95 top_k=20 presence_penalty=0 think=an"></textarea></div>`;
+       <div><label>${tr('Profile (optional, eins pro Zeile: weiterer Name mit eigenen Sampling-Werten, gleicher Runner)')}</label>
+         <textarea class="e-prof" rows="2" placeholder="${tr('Qwen3.6-Code: temperature=0.6 top_p=0.95 top_k=20 presence_penalty=0 think=an')}"></textarea></div>`;
     const q = c => div.querySelector(c);
     q(".e-alias").value = e.alias || "";
     q(".e-ctx").value = ctxOf(e);
@@ -2202,7 +2224,7 @@ function parseProfiles(text) {
 function addEntry() {
   const used = new Set(ENTRIES.map(e => e.model));
   const model = AVAILABLE.find(m => !used.has(m));
-  if (!model) { alert("Alle installierten Modelle sind schon freigegeben."); return; }
+  if (!model) { alert(tr("Alle installierten Modelle sind schon freigegeben.")); return; }
   ENTRIES.push({model, alias: "", forced_options: {num_ctx: FORCED_CTX},
                 keep_alive: -1, think_default: null, warm: true, profiles: []});
   if (!DEFAULT) DEFAULT = model;
@@ -2210,7 +2232,7 @@ function addEntry() {
 }
 
 function removeEntry(i) {
-  if (ENTRIES.length === 1) { alert("Mindestens ein Modell muss freigegeben bleiben."); return; }
+  if (ENTRIES.length === 1) { alert(tr("Mindestens ein Modell muss freigegeben bleiben.")); return; }
   const [gone] = ENTRIES.splice(i, 1);
   if (gone.model === DEFAULT) DEFAULT = ENTRIES[0].model;
   renderEntries();
@@ -2221,21 +2243,21 @@ const gather = () => ({models: ENTRIES, default_model: DEFAULT, vision_helper: V
 function renderVisionHelper() {
   const sel = document.getElementById("visionHelper");
   const opts = [""].concat(AVAILABLE.includes(VISION_HELPER) || !VISION_HELPER ? AVAILABLE : [VISION_HELPER].concat(AVAILABLE));
-  sel.innerHTML = opts.map(m => `<option value="${esc(m)}"${m === VISION_HELPER ? " selected" : ""}>${m ? esc(m) + (AVAILABLE.includes(m) ? "" : " (nicht installiert)") : "aus (Bilder unveraendert durchreichen)"}</option>`).join("");
+  sel.innerHTML = opts.map(m => `<option value="${esc(m)}"${m === VISION_HELPER ? " selected" : ""}>${m ? esc(m) + (AVAILABLE.includes(m) ? "" : tr(" (nicht installiert)")) : tr("aus (Bilder unverändert durchreichen)")}</option>`).join("");
   sel.onchange = ev => { VISION_HELPER = ev.target.value; };
 }
 
 async function apply() {
   const st = document.getElementById("status");
-  st.textContent = "wird angewendet…"; st.style.color = "#9db4ff";
+  st.textContent = tr("wird angewendet…"); st.style.color = "#9db4ff";
   const r = await fetch("/admin/apply", {method:"POST",
     headers:{"Content-Type":"application/json"}, body:JSON.stringify(gather())});
   const d = await r.json();
-  if (!r.ok) { st.textContent = "Fehler: " + (d.error || r.status); st.style.color = "#ff6b6b"; return; }
-  st.textContent = "✓ angewendet" + (d.warming.length
-    ? " – lade vor: " + d.warming.join(", ") : " – alles mit Haekchen ist schon richtig geladen") +
+  if (!r.ok) { st.textContent = tr("Fehler: {error}", {error: d.error || r.status}); st.style.color = "#ff6b6b"; return; }
+  st.textContent = tr("✓ angewendet") + (d.warming.length
+    ? tr(" – lade vor: {models}", {models: d.warming.join(", ")}) : tr(" – alles mit Häkchen ist schon richtig geladen")) +
     (d.not_loaded_cold && d.not_loaded_cold.length
-      ? " · nicht geladen (Vorladen aus): " + d.not_loaded_cold.join(", ") : "");
+      ? tr(" · nicht geladen (Vorladen aus): {models}", {models: d.not_loaded_cold.join(", ")}) : "");
   st.style.color = "#6dd58c";
   await load();
   setTimeout(loadMem, 3000);   // Warmup laeuft im Hintergrund
@@ -2245,7 +2267,7 @@ function renderPresets(names) {
   const box = document.getElementById("presets");
   box.innerHTML = "";
   if (!names.length) { box.innerHTML =
-    '<span style="color:#6b7280;font-size:12px">noch keine Presets</span>'; return; }
+    '<span style="color:#6b7280;font-size:12px">' + tr('noch keine Presets') + '</span>'; return; }
   names.forEach(n => {
     const c = document.createElement("span"); c.className = "chip";
     c.innerHTML = `<span class="load">${n}</span><button>✕</button>`;
@@ -2270,7 +2292,7 @@ async function savePreset() {
   const r = await fetch("/admin/presets", {method:"POST",
     headers:{"Content-Type":"application/json"}, body:JSON.stringify({name, ...gather()})});
   const d = await r.json();
-  if (!r.ok) { alert("Speichern fehlgeschlagen: " + (d.error || r.status)); return; }
+  if (!r.ok) { alert(tr("Speichern fehlgeschlagen: {error}", {error: d.error || r.status})); return; }
   document.getElementById("presetName").value = "";
   renderPresets(d.presets);
 }
@@ -2285,13 +2307,13 @@ function renderModels() {
   const box = document.getElementById("modellist");
   box.innerHTML = "";
   if (!AVAILABLE.length) { box.innerHTML =
-    '<span style="color:#6b7280;font-size:12px">keine Modelle gefunden</span>'; return; }
+    '<span style="color:#6b7280;font-size:12px">' + tr('keine Modelle gefunden') + '</span>'; return; }
   AVAILABLE.forEach(m => {
     const row = document.createElement("div"); row.className = "modelrow";
     const isPromoted = m in PROMOTED;
     row.innerHTML = `<span class="mname" title="${esc(m)}">${esc(m)}</span>` +
-      (isPromoted ? '<span class="active-tag">freigegeben</span>'
-                  : '<button title="loeschen">✕</button>');
+      (isPromoted ? '<span class="active-tag">' + tr('freigegeben') + '</span>'
+                  : '<button title="' + tr('löschen') + '">✕</button>');
     if (!isPromoted) row.querySelector("button").onclick = () => delModel(m);
     box.appendChild(row);
   });
@@ -2304,7 +2326,7 @@ async function pullModel() {
   const fill = document.getElementById("pullfill");
   const st = document.getElementById("pullstatus");
   bar.classList.add("active"); fill.style.width = "0%";
-  st.style.color = "#9db4ff"; st.textContent = "starte Download…";
+  st.style.color = "#9db4ff"; st.textContent = tr("starte Download…");
 
   try {
     const resp = await fetch("/admin/pull", {method:"POST",
@@ -2320,7 +2342,7 @@ async function pullModel() {
       for (const line of lines) {
         if (!line.trim()) continue;
         let o; try { o = JSON.parse(line); } catch { continue; }
-        if (o.error) { st.style.color="#ff6b6b"; st.textContent="Fehler: "+o.error; return; }
+        if (o.error) { st.style.color="#ff6b6b"; st.textContent=tr("Fehler: {error}", {error: o.error}); return; }
         if (o.total && o.completed) {
           const pct = Math.round(o.completed / o.total * 100);
           fill.style.width = pct + "%";
@@ -2331,22 +2353,22 @@ async function pullModel() {
       }
     }
     fill.style.width = "100%";
-    st.style.color = "#6dd58c"; st.textContent = "✓ fertig installiert";
+    st.style.color = "#6dd58c"; st.textContent = tr("✓ fertig installiert");
     document.getElementById("pullName").value = "";
     await load();   // Dropdown + Liste aktualisieren
     setTimeout(() => bar.classList.remove("active"), 1500);
   } catch (e) {
-    st.style.color = "#ff6b6b"; st.textContent = "Fehler: " + e;
+    st.style.color = "#ff6b6b"; st.textContent = tr("Fehler: {error}", {error: e});
   }
 }
 
 async function delModel(name) {
-  if (!confirm("Modell \\"" + name + "\\" wirklich vom Server loeschen?")) return;
+  if (!confirm(tr("Modell „{name}“ wirklich vom Server löschen?", {name}))) return;
   const r = await fetch("/admin/delete", {method:"POST",
     headers:{"Content-Type":"application/json"}, body:JSON.stringify({name})});
   if (!r.ok) {
     const e = await r.json();
-    alert("Loeschen fehlgeschlagen: " + (e.error || r.status));
+    alert(tr("Löschen fehlgeschlagen: {error}", {error: e.error || r.status}));
     return;
   }
   await load();
@@ -2370,18 +2392,18 @@ function renderMem() {
   const m = MEM && MEM.memory;
   if (!m) {
     bar.innerHTML = "";
-    stats.innerHTML = '<span style="color:#6b7280;font-size:12px">RAM-Werte nicht verfuegbar</span>';
+    stats.innerHTML = '<span style="color:#6b7280;font-size:12px">' + tr('RAM-Werte nicht verfügbar') + '</span>';
   } else {
     const models = Math.min(MEM.models_bytes, m.used);
     const other = Math.max(m.used - models, 0);
     const pct = b => (b / m.total * 100).toFixed(2) + "%";
-    bar.innerHTML = `<div class="seg-models" style="width:${pct(models)}" title="Modelle ${gb(models)}"></div>` +
-      `<div class="seg-other" style="width:${pct(other)}" title="System + Apps ${gb(other)}"></div>`;
+    bar.innerHTML = `<div class="seg-models" style="width:${pct(models)}" title="${tr('Modelle {size}', {size: gb(models)})}"></div>` +
+      `<div class="seg-other" style="width:${pct(other)}" title="${tr('System + Apps {size}', {size: gb(other)})}"></div>`;
     stats.innerHTML =
-      `<div><span>Gesamt</span><b>${gb(m.total)}</b></div>` +
-      `<div><span>Belegt</span><b>${gb(m.used)}</b></div>` +
-      `<div><span>davon Modelle</span><b>${gb(MEM.models_bytes)}</b></div>` +
-      `<div><span>Frei</span><b class="${m.available < 2*GB ? "warn" : ""}">${gb(m.available)}</b></div>`;
+      `<div><span>${tr('Gesamt')}</span><b>${gb(m.total)}</b></div>` +
+      `<div><span>${tr('Belegt')}</span><b>${gb(m.used)}</b></div>` +
+      `<div><span>${tr('davon Modelle')}</span><b>${gb(MEM.models_bytes)}</b></div>` +
+      `<div><span>${tr('Frei')}</span><b class="${m.available < 2*GB ? "warn" : ""}">${gb(m.available)}</b></div>`;
     const sw = document.getElementById("swapnote");
     const swPct = m.swap_total ? m.swap_used / m.swap_total : 0;
     // Swap allein ist kein Alarm: Linux lagert auch bei viel freiem RAM selten genutzte Seiten
@@ -2391,13 +2413,13 @@ function renderMem() {
     const swState = swPct > 0.75 && lowRam ? "bad" : (swPct > 0.4 && lowRam) || (m.available < 2*GB) ? "warn" : "";
     sw.className = "note " + swState;
     let gpuTxt = "";
-    if (m.gpu) gpuTxt = ` · GPU-Speicher (geteilt mit RAM): ${gb(m.gpu.gtt_used + m.gpu.vram_used)} / ${gb(m.gpu.gtt_total + m.gpu.vram_total)}` +
+    if (m.gpu) gpuTxt = " · " + tr("GPU-Speicher (geteilt mit RAM): {used} / {total}", {used: gb(m.gpu.gtt_used + m.gpu.vram_used), total: gb(m.gpu.gtt_total + m.gpu.vram_total)}) +
       ` (GTT ${gb(m.gpu.gtt_used)} / ${gb(m.gpu.gtt_total)}, UMA-VRAM ${gb(m.gpu.vram_used)} / ${gb(m.gpu.vram_total)})`;
-    else if (m.gpu_in_use != null) gpuTxt = ` · GPU-Speicher in Benutzung: ${gb(m.gpu_in_use)}`;
-    sw.textContent = `Swap: ${gb(m.swap_used)} von ${gb(m.swap_total)} belegt` +
-      (m.compressed ? ` · komprimiert: ${gb(m.compressed)}` : "") + gpuTxt +
-      (swState === "bad" ? " – der Speicher ist am Limit, das System lagert aus"
-       : swPct > 0.4 ? " – ausgelagert sind nur selten genutzte Seiten, unkritisch solange genug RAM frei ist" : "");
+    else if (m.gpu_in_use != null) gpuTxt = " · " + tr("GPU-Speicher in Benutzung: {size}", {size: gb(m.gpu_in_use)});
+    sw.textContent = tr("Swap: {used} von {total} belegt", {used: gb(m.swap_used), total: gb(m.swap_total)}) +
+      (m.compressed ? " · " + tr("komprimiert: {size}", {size: gb(m.compressed)}) : "") + gpuTxt +
+      (swState === "bad" ? tr(" – der Speicher ist am Limit, das System lagert aus")
+       : swPct > 0.4 ? tr(" – ausgelagert sind nur selten genutzte Seiten, unkritisch solange genug RAM frei ist") : "");
   }
 
   const box = document.getElementById("loadedlist");
@@ -2413,25 +2435,25 @@ function renderMem() {
       : md.public_url ? md.public_url.replace(/[/]$/, "") + (l.path || "/")
       : `http://${host}:${md.port}${l.path || "/"}`;
     const links = md.links.map(l => `<a href="${esc(href(l))}" target="_blank" rel="noopener" style="color:#9db4ff">${esc(l.label)}</a>`);
-    if (md.idle_free_minutes > 0 && md.capabilities.includes("free")) links.push(`gibt nach ${md.idle_free_minutes} Min. Leerlauf frei`);
-    let st = '<span class="warn">nicht erreichbar</span>';
+    if (md.idle_free_minutes > 0 && md.capabilities.includes("free")) links.push(tr("gibt nach {n} Min. Leerlauf frei", {n: md.idle_free_minutes}));
+    let st = '<span class="warn">' + tr('nicht erreichbar') + '</span>';
     if (md.reachable) {
-      if (!md.capabilities.includes("memory")) st = "erreichbar";
+      if (!md.capabilities.includes("memory")) st = tr("erreichbar");
       else if (md.reclaimable) {
         const sub = [];
         if (md.detail) sub.push(esc(md.detail));
         if (md.rss != null) sub.push("RAM " + gb(md.rss) + ", GPU " + gb(md.gpu || 0));
-        st = `haelt ${gb(md.held)}` + (sub.length ? ` (${sub.join(" · ")})` : "");
-      } else st = md.held ? `belegt ${gb(md.held)}` : (md.detail ? esc(md.detail) : "nichts geladen") +
-        (md.rss != null && !md.held ? ` (Prozess ${gb(md.rss)})` : "");
+        st = tr("hält {size}", {size: gb(md.held)}) + (sub.length ? ` (${sub.join(" · ")})` : "");
+      } else st = md.held ? tr("belegt {size}", {size: gb(md.held)}) : (md.detail ? esc(md.detail) : tr("nichts geladen")) +
+        (md.rss != null && !md.held ? " " + tr("(Prozess {size})", {size: gb(md.rss)}) : "");
     }
     const canFree = md.reachable && md.capabilities.includes("free") && md.reclaimable;
     row.innerHTML = `<div class="info"><div class="mname">${esc(md.name)}</div>` +
       `<div class="meta">${st}${links.length ? " · " + links.join(" · ") : ""}</div></div>` +
-      (canFree ? '<button class="ghost" style="padding:5px 10px;font-size:12px">Freigeben</button>' : "");
+      (canFree ? '<button class="ghost" style="padding:5px 10px;font-size:12px">' + tr('Freigeben') + '</button>' : "");
     const b = row.querySelector("button");
     if (b) b.onclick = async () => {
-      b.disabled = true; b.textContent = "Gebe frei…";
+      b.disabled = true; b.textContent = tr("Gebe frei…");
       await fetch("/admin/modules/free", {method: "POST", headers: {"Content-Type": "application/json"},
                                           body: JSON.stringify({name: md.name})});
       await loadMem();
@@ -2439,32 +2461,32 @@ function renderMem() {
     box.appendChild(row);
   });
   if (!loaded.length) {
-    if (!mods.length) box.innerHTML = '<span style="color:#6b7280;font-size:12px">kein Modell geladen</span>';
+    if (!mods.length) box.innerHTML = '<span style="color:#6b7280;font-size:12px">' + tr('kein Modell geladen') + '</span>';
     return;
   }
   loaded.forEach(l => {
     const row = document.createElement("div"); row.className = "loadedrow";
     const parts = [];
     if (l.context_length) parts.push("ctx " + l.context_length);
-    parts.push("belegt ~" + gb(l.used || 0));
+    parts.push(tr("belegt ~{size}", {size: gb(l.used || 0)}));
     if (l.gpu_bytes != null && l.footprint != null)
-      parts.push("Prozess-RAM " + gb(l.footprint) + " + GPU (GTT) " + gb(l.gpu_bytes));
+      parts.push(tr("Prozess-RAM {ram} + GPU (GTT) {gpu}", {ram: gb(l.footprint), gpu: gb(l.gpu_bytes)}));
     else if (l.footprint && l.estimate && l.footprint < l.estimate * 0.8)
-      parts.push("davon im Prozess " + gb(l.footprint) + ", Rest im GPU-Speicher");
-    else if (l.footprint) parts.push("gemessen " + gb(l.footprint));
-    if (l.ollama_size) parts.push("Ollama meldet " + gb(l.ollama_size));
+      parts.push(tr("davon im Prozess {size}, Rest im GPU-Speicher", {size: gb(l.footprint)}));
+    else if (l.footprint) parts.push(tr("gemessen {size}", {size: gb(l.footprint)}));
+    if (l.ollama_size) parts.push(tr("Ollama meldet {size}", {size: gb(l.ollama_size)}));
     row.innerHTML = `<div class="info"><div class="mname" title="${esc(l.name)}">${esc(l.name)}` +
-      (l.is_default ? ' <span class="tag def">★ Standard</span>'
-        : l.promoted ? ' <span class="tag promoted">freigegeben</span>' : "") + `</div>` +
+      (l.is_default ? ' <span class="tag def">★ ' + tr('Standard') + '</span>'
+        : l.promoted ? ' <span class="tag promoted">' + tr('freigegeben') + '</span>' : "") + `</div>` +
       `<div class="meta">${parts.join(" · ")}</div></div>` +
-      `<button class="ghost" style="padding:5px 10px;font-size:12px">Entladen</button>`;
+      `<button class="ghost" style="padding:5px 10px;font-size:12px">${tr('Entladen')}</button>`;
     row.querySelector("button").onclick = () => unloadModel(l.name, l.promoted);
     box.appendChild(row);
   });
 }
 
 async function unloadModel(name, promoted) {
-  if (promoted && !confirm(name + " ist freigegeben. Entladen? Die naechste Anfrage laedt es neu.")) return;
+  if (promoted && !confirm(tr("{name} ist freigegeben. Entladen? Die nächste Anfrage lädt es neu.", {name}))) return;
   await fetch("/admin/unload", {method:"POST",
     headers:{"Content-Type":"application/json"}, body:JSON.stringify({model:name})});
   await loadMem();
@@ -2486,7 +2508,7 @@ function chatReset() {
   if (chatAbort) chatAbort.abort();
   CHAT = [];
   document.getElementById("chatlog").innerHTML =
-    '<span class="empty">Noch keine Nachrichten.</span>';
+    '<span class="empty">' + tr('Noch keine Nachrichten.') + '</span>';
   document.getElementById("chatstats").textContent = "";
 }
 
@@ -2496,7 +2518,7 @@ function chatAddMsg(role, text) {
   if (empty) empty.remove();
   const div = document.createElement("div");
   div.className = "msg " + role;
-  div.innerHTML = `<div class="who">${role === "user" ? "Du" : "Modell"}</div>` +
+  div.innerHTML = `<div class="who">${role === "user" ? tr("Du") : tr("Modell")}</div>` +
     '<div class="think"></div><div class="body"></div>';
   div.querySelector(".body").textContent = text || "";
   log.appendChild(div);
@@ -2526,8 +2548,8 @@ async function chatSend() {
   if (tv) req.think = tv === "true";
 
   chatAbort = new AbortController();
-  btn.textContent = "Stop";
-  stats.textContent = "warte auf erstes Token … (laedt evtl. das Modell)";
+  btn.textContent = tr("Stop");
+  stats.textContent = tr("warte auf erstes Token … (lädt evtl. das Modell)");
   const t0 = performance.now();
   let tFirst = null, nTok = 0, content = "", thinking = "", final = null;
   try {
@@ -2555,32 +2577,34 @@ async function chatSend() {
           if (m.content) { content += m.content; bodyEl.textContent = content; }
           log.scrollTop = log.scrollHeight;
           const dt = (performance.now() - tFirst) / 1000;
-          stats.innerHTML = `live ~<b>${dt > 0.2 ? (nTok / dt).toFixed(1) : "…"}</b> tok/s · ` +
-            `${nTok} Tokens · erstes Token nach ${((tFirst - t0) / 1000).toFixed(1)} s`;
+          stats.innerHTML = tr("live ~{rate} tok/s · {n} Tokens · erstes Token nach {s} s",
+            {rate: `<b>${dt > 0.2 ? (nTok / dt).toFixed(1) : "…"}</b>`, n: nTok, s: ((tFirst - t0) / 1000).toFixed(1)});
         }
         if (o.done) final = o;
       }
     }
     CHAT.push({role: "assistant", content});
     if (final) {
-      stats.innerHTML = `${esc(final.model || req.model)} · Antwort <b>${rate(final.eval_count, final.eval_duration)}</b> tok/s ` +
-        `(${final.eval_count || 0} Tokens) · Prompt <b>${rate(final.prompt_eval_count, final.prompt_eval_duration)}</b> tok/s ` +
-        `(${final.prompt_eval_count || 0} Tokens) · erstes Token nach ${tFirst ? ((tFirst - t0) / 1000).toFixed(1) + " s" : "–"} · ` +
-        `Laden ${sec(final.load_duration || 0)} · gesamt ${sec(final.total_duration || 0)}` +
-        (final.done_reason && final.done_reason !== "stop" ? ` · Ende: ${esc(final.done_reason)}` : "");
+      stats.innerHTML = esc(final.model || req.model) + " · " +
+        tr("Antwort {rate} tok/s ({n} Tokens) · Prompt {prate} tok/s ({pn} Tokens) · erstes Token nach {first} · Laden {load} · gesamt {total}", {
+          rate: `<b>${rate(final.eval_count, final.eval_duration)}</b>`, n: final.eval_count || 0,
+          prate: `<b>${rate(final.prompt_eval_count, final.prompt_eval_duration)}</b>`, pn: final.prompt_eval_count || 0,
+          first: tFirst ? ((tFirst - t0) / 1000).toFixed(1) + " s" : "–",
+          load: sec(final.load_duration || 0), total: sec(final.total_duration || 0)}) +
+        (final.done_reason && final.done_reason !== "stop" ? " · " + tr("Ende: {reason}", {reason: esc(final.done_reason)}) : "");
     }
   } catch (e) {
     if (e.name === "AbortError") {
       if (content) CHAT.push({role: "assistant", content});
-      stats.textContent = `abgebrochen nach ${nTok} Tokens`;
+      stats.textContent = tr("abgebrochen nach {n} Tokens", {n: nTok});
     } else {
-      bodyEl.innerHTML = '<span class="err">Fehler: ' + esc(e.message || e) + "</span>";
+      bodyEl.innerHTML = '<span class="err">' + tr("Fehler: {error}", {error: esc(e.message || e)}) + "</span>";
       CHAT.pop();                                  // fehlgeschlagene Frage nicht im Verlauf lassen
       stats.textContent = "";
     }
   } finally {
     chatAbort = null;
-    btn.textContent = "Senden";
+    btn.textContent = tr("Senden");
   }
 }
 

@@ -22,11 +22,29 @@ python -m pytest tests  # or directly in your venv
 Ollama and a module are simulated by `tests/fake_ollama.py`; no real Ollama or GPU is needed. Please add a test in
 `tests/` for new behaviour.
 
+## Translations
+
+The interface is available in German and English. Visible texts are written in German in the code (`ollama_proxy.py` (UI in `HTML_UI` and admin messages)) and
+translated gettext style – the German text is the key:
+
+```js
+tr('Speichern')                         // → "Save"
+tr('{n} Bilder', {n: items.length})     // placeholders in curly braces
+```
+
+- **Interface:** English texts in `locales/en.json`. Fixed texts in the HTML are translated on load (text, `placeholder`, `title`,
+  `aria-label`, `alt`); texts built in code go through `tr()`. If an entry is missing, the German text is shown.
+- **Server messages:** written in German (`fail(400, "…", request)`) and translated by the server when the request asks for English
+  (header `X-OllamaProxy-Lang`, sent by the interface, otherwise `Accept-Language`). Inserted values appear as `{x}` in the key.
+- `python3 scripts/check_i18n.py` lists missing translations and wrong placeholders (part of the tests and the CI); `--list` prints the
+  missing keys as JSON.
+- Another language: add `locales/<code>.json` and extend `i18n.py` and `static/i18n.js` (`LANGS`, detection).
+
 ## Guidelines
 
 - Small, self-contained changes – rather several pull requests than one big one.
-- Keep the style of the existing code: short comments that explain *why*. Code comments and the UI are in German;
-  English is fine for new comments.
+- Keep the style of the existing code: short comments that explain *why*. Code comments are in German; English is fine for new
+  comments. New UI texts need a translation (see above).
 - Commit messages: one short line saying what changed, details in the body if needed.
 - No private data in code, tests or issues: no access tokens, private IP addresses or host names. Use example values
   such as `192.168.1.10`.

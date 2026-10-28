@@ -12,7 +12,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ollama_proxy.py .
+COPY ollama_proxy.py i18n.py ./
+COPY locales ./locales
+COPY static ./static
 
 ENV OLLAMA_UPSTREAM=http://ollama:11434 \
     PROXY_HOST=0.0.0.0 \

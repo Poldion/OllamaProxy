@@ -238,4 +238,31 @@ def test_unreachable_module_is_reported(tc, monkeypatch):
 
 def test_ui_served(tc):
     r = tc.get("/")
-    assert r.status_code == 200 and "OllamaProxy" in r.text
+    assert r.status_code == 200 and "OllamaProxy" in r.text and "/i18n.js" in r.text
+
+
+# ---------------------------------------------------------------- Sprache
+
+def test_i18n_script_and_translated_errors(tc):
+    js = tc.get("/i18n.js")
+    assert js.status_code == 200 and "window.I18N" in js.text and '"Test-Chat": "Test chat"' in js.text
+    assert tc.post("/admin/delete", json={}).json()["error"] == "kein Modellname"
+    r = tc.post("/admin/delete", json={}, headers={"X-OllamaProxy-Lang": "en"})
+    assert r.json()["error"] == "no model name"
+    bad = {"models": [{"model": "gemma4:test", "alias": "X"}, {"model": "qwen:test", "alias": "X"}],
+           "default_model": "gemma4:test"}
+    r = tc.post("/admin/apply", json=bad, headers={"Accept-Language": "en-GB,en"})
+    assert r.status_code == 400 and r.json()["error"] == "name/alias 'X' is used twice"
+
+
+def test_modules_get_ui_language(tc):
+    assert tc.get("/admin/modules").json()[0]["links"][0]["label"] == "Oeffnen"
+    mods = tc.get("/admin/modules", headers={"X-OllamaProxy-Lang": "en"}).json()
+    assert mods[0]["links"][0]["label"] == "Open"
+
+
+def test_all_texts_translated():
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = subprocess.run([sys.executable, os.path.join(root, "scripts", "check_i18n.py")], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr

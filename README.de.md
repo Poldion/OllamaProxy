@@ -36,7 +36,7 @@ ihren Speicher frei, wenn ein Sprachmodell Platz braucht.
 | **Module** | Weitere Dienste mit Link, Speicher und „Freigeben“; der Wächter gibt sie nach Leerlauf frei |
 | **Schleifen-Bremse** | Entfernt neutrale Strafwerte (`presence_penalty 0` …), damit die Werte aus dem Modelfile gelten |
 | **Antwortlänge je Client** | Optional begrenzt, z. B. kurze Sprachantworten für Home Assistant |
-| **Presets & Web-UI** | Modelle ziehen, löschen, laden, entladen; komplette Modelllisten als Presets speichern. Oberfläche auf Deutsch |
+| **Presets & Web-UI** | Modelle ziehen, löschen, laden, entladen; komplette Modelllisten als Presets speichern. Oberfläche auf Deutsch und Englisch |
 
 ## Schnellstart
 
@@ -105,6 +105,8 @@ Das Modul bietet an:
 `held` zählt in der Anzeige zu „davon Modelle“, `gpu` wird vom GPU-Anteil der Sprachmodelle abgezogen. Module mit
 `free`, die `reclaimable` und nicht `busy` melden, gibt der Wächter nach `idle_free_minutes` frei. Links mit `path`
 zeigen auf den Port aus `url` (bzw. auf `public_url`), Links mit `port` auf denselben Rechner wie die Proxy-Oberfläche.
+Der Proxy schickt `Accept-Language` mit der Sprache seiner Oberfläche (`de` oder `en`), damit Module `label` und
+`detail` passend liefern können.
 
 Frühere Einstellungen per Umgebung (`COMFYUI_URL`, `WEBAPP_PUBLIC_PORT`, `FACEREC_PUBLIC_PORT`,
 `COMFYUI_IDLE_FREE_MINUTES`) werden ohne `modules.json` automatisch in Module übersetzt.
@@ -146,8 +148,8 @@ flowchart LR
 
 ## Dokumentation
 
-- [docs/linux-amd.md](docs/linux-amd.md) – Betrieb unter Linux mit AMD-GPU: Docker oder systemd, GTT-Einstellung, ROCm oder Vulkan, Speichermessung
-- [docs/macos.md](docs/macos.md) – Betrieb unter macOS mit launchd und typische Stolpersteine
+- [docs/linux-amd.md](docs/linux-amd.md) – Betrieb unter Linux mit AMD-GPU: Docker oder systemd, GTT-Einstellung, ROCm oder Vulkan, Speichermessung (Englisch: [linux-amd.en.md](docs/linux-amd.en.md))
+- [docs/macos.md](docs/macos.md) – Betrieb unter macOS mit launchd und typische Stolpersteine (Englisch: [macos.en.md](docs/macos.en.md))
 - [CHANGELOG.md](CHANGELOG.md) – Versionsverlauf (nur Englisch)
 - [CONTRIBUTING.md](CONTRIBUTING.md) – Entwicklungsumgebung, Tests, Regeln (nur Englisch, mit deutschem Abschnitt)
 - [SECURITY.md](SECURITY.md) – Sicherheitslücken melden (nur Englisch)

@@ -3,6 +3,18 @@
 All notable changes to this project are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] – 2026-10-28
+
+### Added
+
+- English user interface: language switch (DE/EN) in the web UI, defaults to the browser language and is remembered
+  in the browser
+- Error messages of the admin endpoints in the language of the request (`X-OllamaProxy-Lang` from the UI, otherwise
+  `Accept-Language`)
+- Modules are asked in the UI language (`Accept-Language`), so their link labels and details match
+- Translation check `scripts/check_i18n.py` (part of the tests): reports missing translations and wrong placeholders
+- English versions of the guides (`docs/linux-amd.en.md`, `docs/macos.en.md`), linked from the English README
+
 ## [0.1.0] – 2026-10-28
 
 ### Added

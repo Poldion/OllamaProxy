@@ -94,8 +94,9 @@ async def generate(request: Request):
 
 # ---- ein Modul (Schnittstelle /proxy-module) ----
 @app.get("/proxy-module")
-async def module_info():
-    return {"name": "Testmodul", "version": "1", "links": [{"label": "Oeffnen", "path": "/"}],
+async def module_info(request: Request):
+    label = "Open" if request.headers.get("accept-language", "").startswith("en") else "Oeffnen"
+    return {"name": "Testmodul", "version": "1", "links": [{"label": label, "path": "/"}],
             "capabilities": ["memory", "free"], "idle_free_minutes": 0}
 
 

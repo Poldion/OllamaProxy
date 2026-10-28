@@ -1,5 +1,7 @@
 # Betrieb unter macOS (launchd)
 
+🇬🇧 [English](macos.en.md) · 🇩🇪 Deutsch
+
 Der Proxy läuft als launchd-User-Agent neben einem vorhandenen Ollama (App oder `ollama serve`).
 
 ## Ordner

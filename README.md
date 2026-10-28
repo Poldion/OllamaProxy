@@ -36,7 +36,7 @@ language model needs the space.
 | **Modules** | Other services with link, memory and "free"; the watchdog frees them after idle time |
 | **Loop brake** | Drops neutral penalty values (`presence_penalty 0` …) so the values from the Modelfile apply |
 | **Answer length per client** | Optional limit, e.g. short voice answers for Home Assistant |
-| **Presets & web UI** | Pull, delete, load and unload models; save complete model lists as presets. UI in German |
+| **Presets & web UI** | Pull, delete, load and unload models; save complete model lists as presets. UI in English and German |
 
 ## Quick start
 
@@ -105,6 +105,8 @@ The module provides:
 `held` counts towards "models" in the memory view, `gpu` is subtracted from the GPU share of the language models.
 Modules with `free` that report `reclaimable` and not `busy` are freed by the watchdog after `idle_free_minutes`.
 Links with `path` point to the port from `url` (or to `public_url`), links with `port` to the same host as the proxy UI.
+The proxy sends `Accept-Language` with the language of its UI (`de` or `en`), so modules can answer `label` and
+`detail` in that language.
 
 Older environment settings (`COMFYUI_URL`, `WEBAPP_PUBLIC_PORT`, `FACEREC_PUBLIC_PORT`, `COMFYUI_IDLE_FREE_MINUTES`)
 are translated into modules automatically when there is no `modules.json`.
@@ -146,10 +148,10 @@ flowchart LR
 
 ## Documentation
 
-- [docs/linux-amd.md](docs/linux-amd.md) – running on Linux with an AMD GPU: Docker or systemd, GTT setting, ROCm or Vulkan, memory measurement (German)
-- [docs/macos.md](docs/macos.md) – running on macOS with launchd and common pitfalls (German)
+- [docs/linux-amd.en.md](docs/linux-amd.en.md) – running on Linux with an AMD GPU: Docker or systemd, GTT setting, ROCm or Vulkan, memory measurement (German: [linux-amd.md](docs/linux-amd.md))
+- [docs/macos.en.md](docs/macos.en.md) – running on macOS with launchd and common pitfalls (German: [macos.md](docs/macos.md))
 - [CHANGELOG.md](CHANGELOG.md) – version history
-- [CONTRIBUTING.md](CONTRIBUTING.md) – development setup, tests, guidelines
+- [CONTRIBUTING.md](CONTRIBUTING.md) – development setup, tests, guidelines, translations
 - [SECURITY.md](SECURITY.md) – reporting security issues
 
 ## Development
