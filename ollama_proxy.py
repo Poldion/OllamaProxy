@@ -51,7 +51,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import i18n
 from i18n import N_
 
-__version__ = "0.2.0"          # SemVer; einzige Stelle (Oberflaeche und /admin/state lesen sie von hier)
+__version__ = "0.2.1"          # SemVer; einzige Stelle (Oberflaeche und /admin/state lesen sie von hier)
 
 UPSTREAM = os.environ.get("OLLAMA_UPSTREAM", "http://localhost:11434").rstrip("/")
 LISTEN_HOST = os.environ.get("PROXY_HOST", "0.0.0.0")
